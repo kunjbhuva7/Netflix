@@ -1,67 +1,76 @@
 pipeline {
     agent any 
     
-    environment {
-        GOOGLE_APPLICATION_CREDENTIALS = credentials('gcp-service-account')
-        GOOGLE_CLOUD_PROJECT = credentials('gcp-project-id')
-    }
-    
     stages {
-        stage('Clean Workspace') {
-            steps {
+        stage('clean workspace'){
+            steps{
                 cleanWs()
             }
         }
-        stage('Git Checkout') {
+        stage ("Git Checkout") {
             steps {
-                git branch: 'main', url: 'https://github.com/vijaygiduthuri/Netflix.git'
+                git branch: 'main', url: 'https://github.com/kunjbhuva7/Netflix.git'
             }
         }
-        stage('Build Docker Image') {
+        stage('OWASP FS SCAN') {
             steps {
-                sh "docker build -t netflix:latest ."
+                dependencyCheck additionalArguments: '--scan ./ --disableYarnAudit --disableNodeAudit', odcInstallation: 'DP-Check'
+                dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
             }
         }
-        stage('Authenticate with Google Cloud') {
+        stage ("Build Docker Image") {
             steps {
-                withCredentials([file(credentialsId: 'gcp-service-account', variable: 'GOOGLE_APPLICATION_CREDENTIALS')]) {
-                    sh "gcloud auth activate-service-account --key-file=${GOOGLE_APPLICATION_CREDENTIALS}"
-                    sh "gcloud config set project ${GOOGLE_CLOUD_PROJECT}"
-                    sh "gcloud auth configure-docker us-central1-docker.pkg.dev"
+                sh "docker build -t netflix ."
+            }
+        }
+        stage ("Tag & Push to DockerHub") {
+            steps {
+                script {
+                    withDockerRegistry(credentialsId: 'docker') {
+                        sh "docker tag netflix kunj22/netflix:latest"
+                        sh "docker push kunj22/netflix:latest"
+                    }
                 }
             }
         }
-        stage('Tag Docker Image for Artifact Registry') {
+        stage ("Docker Scout Image Analysis ") {
             steps {
-                sh "docker tag netflix:latest us-central1-docker.pkg.dev/${GOOGLE_CLOUD_PROJECT}/docker-repo/netflix:latest"
+                script {
+                    withDockerRegistry(credentialsId: 'docker') {
+                        sh 'docker-scout quickview kunj22/netflix:latest'
+                        sh 'docker-scout cves kunj22/netflix:latest'
+                        sh 'docker-scout recommendations kunj22/netflix:latest'
+                    }
+                }
             }
         }
-        stage('Push Docker Image to Artifact Registry') {
+        stage ("Deploy to Docker Conatiner") {
             steps {
-                sh "docker push us-central1-docker.pkg.dev/${GOOGLE_CLOUD_PROJECT}/docker-repo/netflix:latest"
+                sh "docker run -itd --name netflix -p 4000:80 netflix:latest"
             }
         }
-        stage ('Cleanup Docker Image on VM'){
-            steps {
-                // Remove all unused Docker images
-                sh "docker image prune -f"
-            }
-        }
-        stage('Cleanup Existing Container') {
-            steps {
-                // Stop and remove the existing container if it exists
-                sh """
-                if [ \$(docker ps -a -q -f name=netflix) ]; then
-                    docker stop netflix || true
-                    docker rm netflix || true
-                fi
-                """
-            }
-        }
-        stage('Deploy Docker Image from Artifact Registry') {
-            steps {
-                sh "docker run -itd --name netflix -p 4000:80 us-central1-docker.pkg.dev/${GOOGLE_CLOUD_PROJECT}/docker-repo/netflix:latest"
-            }
+    }
+    post {
+    always {
+        emailext attachLog: true,
+            subject: "'${currentBuild.result}'",
+            body: """
+                <html>
+                <body>
+                    <div style="background-color: #FFA07A; padding: 10px; margin-bottom: 10px;">
+                        <p style="color: white; font-weight: bold;">Project: ${env.JOB_NAME}</p>
+                    </div>
+                    <div style="background-color: #90EE90; padding: 10px; margin-bottom: 10px;">
+                        <p style="color: white; font-weight: bold;">Build Number: ${env.BUILD_NUMBER}</p>
+                    </div>
+                    <div style="background-color: #87CEEB; padding: 10px; margin-bottom: 10px;">
+                        <p style="color: white; font-weight: bold;">URL: ${env.BUILD_URL}</p>
+                    </div>
+                </body>
+                </html>
+            """,
+            to: 'kunjbhuva301@gmail.com',
+            mimeType: 'text/html'
         }
     }
 }
